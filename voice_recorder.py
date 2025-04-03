@@ -21,15 +21,17 @@ app.use_app('tkinter')
 
 # Modern UI Constants
 COLORS = {
-    'primary': '#2196F3',  # Blue
-    'secondary': '#1976D2',  # Darker Blue
-    'background': '#F5F5F5',  # Light Gray
-    'surface': '#FFFFFF',  # White
-    'text': '#212121',  # Dark Gray
-    'text_secondary': '#757575',  # Medium Gray
-    'border': '#E0E0E0',  # Light Gray
-    'success': '#4CAF50',  # Green
-    'error': '#F44336',  # Red
+    'primary': '#2196F3',      # Blue
+    'secondary': '#1976D2',    # Darker Blue
+    'background': '#1E1E1E',   # Dark Gray (almost black)
+    'surface': '#2D2D2D',      # Slightly lighter dark gray
+    'text': '#FFFFFF',         # White
+    'text_secondary': '#B0B0B0', # Light Gray
+    'border': '#404040',       # Medium Gray
+    'success': '#4CAF50',      # Green
+    'error': '#F44336',        # Red
+    'hover': '#3D3D3D',        # Hover state for buttons
+    'active': '#404040',       # Active state for buttons
 }
 
 FONTS = {
@@ -49,7 +51,10 @@ class ModernButton(tk.Button):
             relief='flat',
             padx=20,
             pady=10,
-            cursor='hand2'
+            cursor='hand2',
+            activebackground=COLORS['active'],
+            activeforeground='white',
+            borderwidth=0
         )
         self.bind('<Enter>', lambda e: self.config(bg=COLORS['secondary']))
         self.bind('<Leave>', lambda e: self.config(bg=COLORS['primary']))
@@ -77,7 +82,11 @@ class ModernText(tk.Text):
             fg=COLORS['text'],
             relief='flat',
             padx=10,
-            pady=10
+            pady=10,
+            insertbackground=COLORS['text'],
+            selectbackground=COLORS['primary'],
+            selectforeground='white',
+            borderwidth=0
         )
 
 class ModernScale(tk.Scale):
@@ -86,8 +95,10 @@ class ModernScale(tk.Scale):
         self.config(
             bg=COLORS['background'],
             fg=COLORS['text'],
-            troughcolor=COLORS['primary'],
-            activebackground=COLORS['secondary']
+            troughcolor=COLORS['surface'],
+            activebackground=COLORS['hover'],
+            highlightthickness=0,
+            borderwidth=0
         )
 
 class ModernOptionMenu(tk.OptionMenu):
@@ -99,7 +110,20 @@ class ModernOptionMenu(tk.OptionMenu):
             fg=COLORS['text'],
             relief='flat',
             padx=10,
-            pady=5
+            pady=5,
+            activebackground=COLORS['hover'],
+            activeforeground=COLORS['text'],
+            highlightthickness=0,
+            borderwidth=0
+        )
+        # Style the menu
+        self['menu'].config(
+            bg=COLORS['surface'],
+            fg=COLORS['text'],
+            activebackground=COLORS['hover'],
+            activeforeground=COLORS['text'],
+            relief='flat',
+            bd=0
         )
 
 @dataclass
@@ -585,6 +609,7 @@ class VoiceRecorder:
             self.status_label.config(text="Error: Could not start audio")
     
     def stop_audio(self):
+        # First, stop the audio stream
         if self.stream:
             try:
                 self.stream.stop()
@@ -593,41 +618,68 @@ class VoiceRecorder:
             except Exception as e:
                 print(f"Error stopping audio stream: {str(e)}")
         
+        # Set flags to stop processing
         self.is_running = False
+        self.transcription_running = False
         
-        # Stop transcription thread gracefully
-        if self.transcription_thread and self.transcription_thread.is_alive():
-            # Clear the queue to prevent the thread from getting stuck
-            while not self.transcription_queue.empty():
-                try:
-                    self.transcription_queue.get_nowait()
-                except queue.Empty:
-                    break
-            
-            # Wait for the thread to finish with a timeout
+        # Clear all queues immediately
+        def clear_queues():
             try:
-                self.transcription_thread.join(timeout=1.0)
+                while not self.transcription_queue.empty():
+                    try:
+                        self.transcription_queue.get_nowait()
+                    except queue.Empty:
+                        break
+                
+                while not self.result_queue.empty():
+                    try:
+                        self.result_queue.get_nowait()
+                    except queue.Empty:
+                        break
             except Exception as e:
-                print(f"Error joining transcription thread: {str(e)}")
+                print(f"Error clearing queues: {str(e)}")
+        
+        # Run queue clearing in a separate thread
+        clear_thread = Thread(target=clear_queues)
+        clear_thread.daemon = True
+        clear_thread.start()
         
         # Clear buffers
         self.spectrogram_buffer = []
         self.whisper_buffer = []
+        self.current_chunk = np.array([], dtype=np.float32)
         
-        # Clear transcription queue
-        while not self.transcription_queue.empty():
-            try:
-                self.transcription_queue.get_nowait()
-            except queue.Empty:
-                break
+        # Reset sequence counters
+        self.last_sequence = 0
+        self.last_displayed_sequence = 0
         
-        # Update UI
+        # Update UI elements immediately
         self.status_label.config(text="Ready")
         self.toggle_button.config(text="Start Recording")
         
         # Clear spectrogram
         self.spectrogram_data = np.zeros((1024, 100), dtype=np.float32)
         self.spectrogram.update_spectrogram(self.spectrogram_data)
+        
+        # Force garbage collection
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        
+        # Handle transcription thread cleanup with timeout
+        if self.transcription_thread and self.transcription_thread.is_alive():
+            def cleanup_thread():
+                try:
+                    # Wait for the thread to finish with a timeout
+                    self.transcription_thread.join(timeout=0.5)
+                    if self.transcription_thread.is_alive():
+                        print("Transcription thread did not terminate gracefully")
+                except Exception as e:
+                    print(f"Error during thread cleanup: {str(e)}")
+            
+            # Run cleanup in a separate thread
+            cleanup_thread = Thread(target=cleanup_thread)
+            cleanup_thread.daemon = True
+            cleanup_thread.start()
     
     def is_speech(self, audio_chunk):
         """Detect if the audio chunk contains speech based on energy."""
@@ -780,99 +832,72 @@ class VoiceRecorder:
         while self.transcription_running:
             try:
                 # Get audio data from queue with timeout
-                audio_data = self.transcription_queue.get(timeout=0.1)
-                if audio_data is not None:
-                    print(f"Processing audio chunk of size: {audio_data.shape}")
-                    print(f"Audio data type: {audio_data.dtype}, min: {np.min(audio_data)}, max: {np.max(audio_data)}")
-                    
-                    # Ensure audio data is in the correct format
-                    if len(audio_data.shape) > 1:
-                        audio_data = audio_data.flatten()
-                    
-                    # Convert to floating point values in range [-1, 1]
-                    if audio_data.dtype != np.float32:
-                        audio_data = audio_data.astype(np.float32)
-                    if np.max(np.abs(audio_data)) > 1.0:
-                        audio_data = audio_data / 32768.0
-                    
-                    print(f"After conversion - type: {audio_data.dtype}, min: {np.min(audio_data)}, max: {np.max(audio_data)}")
-                    
-                    # Resample to 16kHz if needed (Whisper's expected sample rate)
-                    if self.sample_rate != 16000:
-                        print(f"Resampling from {self.sample_rate}Hz to 16kHz")
-                        audio_data = signal.resample_poly(audio_data, 16000, self.sample_rate)
-                        print(f"After resampling - size: {audio_data.shape}")
-                    
-                    # Convert to torch tensor and move to GPU
-                    audio_data = torch.from_numpy(audio_data)
-                    if torch.cuda.is_available():
-                        audio_data = audio_data.cuda()
-                    
-                    # Perform transcription using Whisper
-                    print("Starting transcription...")
-                    try:
-                        # Clear CUDA cache before transcription
-                        if torch.cuda.is_available():
-                            torch.cuda.empty_cache()
-                        
-                        # Ensure model is on GPU
-                        if torch.cuda.is_available():
-                            self.whisper_model = self.whisper_model.cuda()
-                        
-                        # Get selected language code
-                        selected_language = self.languages[self.language_var.get()]
-                        print(f"Transcribing in language: {selected_language}")
-                        
-                        # Process the chunk
-                        print("Calling Whisper transcribe...")
-                        result = self.whisper_model.transcribe(audio_data, language=selected_language)
-                        print("Whisper transcribe completed")
-                        
-                        if result and "text" in result:
-                            transcription = result["text"].strip()
-                            if transcription:  # Only process non-empty transcriptions
-                                print(f"Transcription result: {transcription}")
-                                
-                                # Create a new transcription result with timestamp and sequence
-                                self.last_sequence += 1
-                                trans_result = TranscriptionResult(
-                                    timestamp=time.time(),
-                                    text=transcription,
-                                    sequence=self.last_sequence
-                                )
-                                
-                                print(f"Adding result to queue with sequence {self.last_sequence}")
-                                # Add to result queue
-                                self.result_queue.put((trans_result.sequence, trans_result))
-                                
-                                # Schedule display update
-                                self.root.after(0, self._update_transcription_display)
-                            else:
-                                print("Empty transcription result, skipping")
-                        else:
-                            print("No transcription result returned from Whisper")
-                        
-                        # Clear GPU memory
-                        if torch.cuda.is_available():
-                            del audio_data
-                            torch.cuda.empty_cache()
-                    except Exception as e:
-                        print(f"Error during transcription: {str(e)}")
-                        import traceback
-                        traceback.print_exc()
-                        # Clear GPU memory on error
-                        if torch.cuda.is_available():
-                            torch.cuda.empty_cache()
+                try:
+                    audio_data = self.transcription_queue.get(timeout=0.1)
+                except queue.Empty:
+                    continue
                 
-            except queue.Empty:
-                continue
+                if audio_data is None or not self.transcription_running:
+                    break
+                
+                # Ensure audio data is in the correct format
+                if len(audio_data.shape) > 1:
+                    audio_data = audio_data.flatten()
+                
+                # Convert to floating point values in range [-1, 1]
+                if audio_data.dtype != np.float32:
+                    audio_data = audio_data.astype(np.float32)
+                if np.max(np.abs(audio_data)) > 1.0:
+                    audio_data = audio_data / 32768.0
+                
+                # Resample to 16kHz if needed (Whisper's expected sample rate)
+                if self.sample_rate != 16000:
+                    audio_data = signal.resample_poly(audio_data, 16000, self.sample_rate)
+                
+                # Convert to torch tensor and move to GPU
+                audio_data = torch.from_numpy(audio_data)
+                if torch.cuda.is_available():
+                    audio_data = audio_data.cuda()
+                
+                # Perform transcription using Whisper
+                try:
+                    # Get selected language code
+                    selected_language = self.languages[self.language_var.get()]
+                    
+                    # Process the chunk
+                    result = self.whisper_model.transcribe(audio_data, language=selected_language)
+                    
+                    if result and "text" in result:
+                        transcription = result["text"].strip()
+                        if transcription:  # Only process non-empty transcriptions
+                            # Create a new transcription result with timestamp and sequence
+                            self.last_sequence += 1
+                            trans_result = TranscriptionResult(
+                                timestamp=time.time(),
+                                text=transcription,
+                                sequence=self.last_sequence
+                            )
+                            
+                            # Add to result queue
+                            self.result_queue.put((trans_result.sequence, trans_result))
+                            
+                            # Schedule display update
+                            self.root.after(0, self._update_transcription_display)
+                    
+                    # Clear GPU memory
+                    if torch.cuda.is_available():
+                        del audio_data
+                        torch.cuda.empty_cache()
+                except Exception as e:
+                    print(f"Error during transcription: {str(e)}")
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                
             except Exception as e:
                 print(f"Transcription error: {str(e)}")
-                import traceback
-                traceback.print_exc()
-                # Clear GPU memory on error
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
+                continue
     
     def _update_transcription_display(self):
         """Update the transcription display with results in order."""

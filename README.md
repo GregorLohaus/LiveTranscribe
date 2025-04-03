@@ -15,7 +15,7 @@ A real-time voice transcription application with spectrogram visualization, buil
 - Input device selection
 - Real-time transcription display with ordered results
 
-![Application Interface](Selection_041.jpg)
+![Application Interface](Selection_042.jpg)
 
 ## Requirements
 
