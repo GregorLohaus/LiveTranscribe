@@ -9,11 +9,8 @@ from vispy.gloo import Texture2D
 import sys
 from tkinter import filedialog
 import whisper  # Add Whisper import
-from modelscope.pipelines import pipeline
-from modelscope.utils.constant import Tasks
 import queue
 import torch
-import torchaudio
 import os
 import time
 from dataclasses import dataclass
