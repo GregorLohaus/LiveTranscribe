@@ -7,7 +7,7 @@ from scipy.io import wavfile
 from vispy import app, gloo
 from vispy.gloo import Texture2D
 import sys
-from tkinter import filedialog
+from tkinter import filedialog, ttk
 import whisper  # Add Whisper import
 import queue
 import torch
@@ -18,6 +18,89 @@ from typing import Optional
 
 # Set the backend to tkinter
 app.use_app('tkinter')
+
+# Modern UI Constants
+COLORS = {
+    'primary': '#2196F3',  # Blue
+    'secondary': '#1976D2',  # Darker Blue
+    'background': '#F5F5F5',  # Light Gray
+    'surface': '#FFFFFF',  # White
+    'text': '#212121',  # Dark Gray
+    'text_secondary': '#757575',  # Medium Gray
+    'border': '#E0E0E0',  # Light Gray
+    'success': '#4CAF50',  # Green
+    'error': '#F44336',  # Red
+}
+
+FONTS = {
+    'heading': ('Helvetica', 16, 'bold'),
+    'subheading': ('Helvetica', 12, 'bold'),
+    'body': ('Helvetica', 10),
+    'button': ('Helvetica', 10, 'bold'),
+}
+
+class ModernButton(tk.Button):
+    def __init__(self, master=None, **kwargs):
+        super().__init__(master, **kwargs)
+        self.config(
+            font=FONTS['button'],
+            bg=COLORS['primary'],
+            fg='white',
+            relief='flat',
+            padx=20,
+            pady=10,
+            cursor='hand2'
+        )
+        self.bind('<Enter>', lambda e: self.config(bg=COLORS['secondary']))
+        self.bind('<Leave>', lambda e: self.config(bg=COLORS['primary']))
+
+class ModernFrame(tk.Frame):
+    def __init__(self, master=None, **kwargs):
+        super().__init__(master, **kwargs)
+        self.config(bg=COLORS['background'])
+
+class ModernLabel(tk.Label):
+    def __init__(self, master=None, **kwargs):
+        super().__init__(master, **kwargs)
+        self.config(
+            font=FONTS['body'],
+            bg=COLORS['background'],
+            fg=COLORS['text']
+        )
+
+class ModernText(tk.Text):
+    def __init__(self, master=None, **kwargs):
+        super().__init__(master, **kwargs)
+        self.config(
+            font=FONTS['body'],
+            bg=COLORS['surface'],
+            fg=COLORS['text'],
+            relief='flat',
+            padx=10,
+            pady=10
+        )
+
+class ModernScale(tk.Scale):
+    def __init__(self, master=None, **kwargs):
+        super().__init__(master, **kwargs)
+        self.config(
+            bg=COLORS['background'],
+            fg=COLORS['text'],
+            troughcolor=COLORS['primary'],
+            activebackground=COLORS['secondary']
+        )
+
+class ModernOptionMenu(tk.OptionMenu):
+    def __init__(self, master, variable, *values, **kwargs):
+        super().__init__(master, variable, *values, **kwargs)
+        self.config(
+            font=FONTS['body'],
+            bg=COLORS['surface'],
+            fg=COLORS['text'],
+            relief='flat',
+            padx=10,
+            pady=5
+        )
 
 @dataclass
 class TranscriptionResult:
@@ -152,7 +235,8 @@ class VoiceRecorder:
     def __init__(self):
         self.root = tk.Tk()
         self.root.title("Voice Recorder")
-        self.root.geometry("800x600")  # Wider window for two columns
+        self.root.geometry("1000x700")  # Larger window for better spacing
+        self.root.configure(bg=COLORS['background'])
         
         # Initialize Whisper model with GPU
         device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -160,65 +244,8 @@ class VoiceRecorder:
         
         # Set memory allocation strategy
         if torch.cuda.is_available():
-            # Enable expandable segments to avoid fragmentation
             os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True,max_split_size_mb:512'
-            
-            # Clear cache
             torch.cuda.empty_cache()
-        
-        # Available Whisper models
-        self.whisper_models = {
-            "tiny": "tiny",
-            "base": "base",
-            "small": "small",
-            "medium": "medium",
-            "large": "large"
-        }
-        
-        # Use base model for better accuracy while still being memory efficient
-        self.current_model_name = "base"  # Store the current model name
-        self.whisper_model = whisper.load_model(self.whisper_models[self.current_model_name], device=device)
-        
-        # Create transcription queue and thread
-        self.transcription_queue = queue.Queue()  # No size limit, we'll manage chunks properly
-        self.transcription_thread = None
-        self.transcription_running = False
-        
-        # Create result queue for ordered transcription display
-        self.result_queue = queue.PriorityQueue()
-        self.last_sequence = 0
-        self.last_displayed_sequence = 0  # Start at 0 instead of -1
-        
-        # Audio processing settings
-        self.chunk_size = 16000 * 2  # 2 seconds at 16kHz
-        self.current_chunk = np.array([], dtype=np.float32)
-        self.silence_threshold = 0.01  # Adjust this based on your microphone
-        self.min_speech_duration = 16000 // 4  # 0.25 seconds minimum speech
-        self.max_speech_duration = 16000 * 3  # 3 seconds maximum speech
-        self.speech_active = False
-        self.speech_start = 0
-        
-        # Create main container for two columns
-        self.main_container = tk.Frame(self.root)
-        self.main_container.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-        
-        # Create left column container for spectrogram
-        self.left_container = tk.Frame(self.main_container)
-        self.left_container.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 10))
-        
-        # Create right column container for textbox
-        self.right_container = tk.Frame(self.main_container)
-        self.right_container.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
-        
-        # Create top textbox for transcription
-        self.top_textbox = tk.Text(self.right_container, wrap=tk.WORD, font=("Arial", 12))
-        self.top_textbox.pack(fill=tk.BOTH, expand=True)
-        
-        # Add scrollbar to top textbox
-        top_scrollbar = tk.Scrollbar(self.top_textbox)
-        top_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        self.top_textbox.config(yscrollcommand=top_scrollbar.set)
-        top_scrollbar.config(command=self.top_textbox.yview)
         
         # Initialize audio variables
         self.sample_rate = 44100
@@ -229,27 +256,14 @@ class VoiceRecorder:
         self.last_transcription_time = 0
         self.transcription_interval = 5.0  # Process transcription every 5 seconds
         
-        # Get available audio devices
-        self.devices = sd.query_devices()
-        self.input_devices = [device for device in self.devices if device['max_input_channels'] > 0]
-        self.input_device_names = [f"{device['name']} (ID: {device['index']})" for device in self.input_devices]
-        
-        # Create input device selection
-        input_label = tk.Label(self.left_container, text="Input Device:", font=("Arial", 10))
-        input_label.pack(pady=(10,0))
-        
-        self.input_device_var = tk.StringVar()
-        self.input_device_dropdown = tk.OptionMenu(
-            self.left_container,
-            self.input_device_var,
-            *self.input_device_names
-        )
-        self.input_device_dropdown.pack(pady=(0,10))
-        self.input_device_var.set(self.input_device_names[0] if self.input_device_names else "No input devices found")
-        
-        # Create language selection
-        language_label = tk.Label(self.left_container, text="Language:", font=("Arial", 10))
-        language_label.pack(pady=(10,0))
+        # Available Whisper models
+        self.whisper_models = {
+            "tiny": "tiny",
+            "base": "base",
+            "small": "small",
+            "medium": "medium",
+            "large": "large"
+        }
         
         # Whisper supported languages
         self.languages = {
@@ -284,96 +298,97 @@ class VoiceRecorder:
             "Thai": "th"
         }
         
-        self.language_var = tk.StringVar()
-        self.language_dropdown = tk.OptionMenu(
-            self.left_container,
-            self.language_var,
-            *sorted(self.languages.keys())
+        self.current_model_name = "base"
+        self.whisper_model = whisper.load_model(self.whisper_models[self.current_model_name], device=device)
+        
+        # Create transcription queue and thread
+        self.transcription_queue = queue.Queue()
+        self.transcription_thread = None
+        self.transcription_running = False
+        
+        # Create result queue for ordered transcription display
+        self.result_queue = queue.PriorityQueue()
+        self.last_sequence = 0
+        self.last_displayed_sequence = 0
+        
+        # Audio processing settings
+        self.chunk_size = 16000 * 2
+        self.current_chunk = np.array([], dtype=np.float32)
+        self.silence_threshold = 0.01
+        self.min_speech_duration = 16000 // 4
+        self.max_speech_duration = 16000 * 3
+        self.speech_active = False
+        self.speech_start = 0
+        
+        # Create main container with padding
+        self.main_container = ModernFrame(self.root)
+        self.main_container.pack(fill=tk.BOTH, expand=True, padx=20, pady=20)
+        
+        # Create title
+        title_label = ModernLabel(
+            self.main_container,
+            text="Live Voice Transcription",
+            font=FONTS['heading']
         )
-        self.language_dropdown.pack(pady=(0,10))
-        self.language_var.set("English")  # Default to English
+        title_label.pack(pady=(0, 20))
         
-        # Create Whisper model selection
-        model_label = tk.Label(self.left_container, text="Whisper Model:", font=("Arial", 10))
-        model_label.pack(pady=(10,0))
+        # Create left column container for controls
+        self.left_container = ModernFrame(self.main_container)
+        self.left_container.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 20))
         
-        self.model_var = tk.StringVar()
-        self.model_dropdown = tk.OptionMenu(
-            self.left_container,
-            self.model_var,
-            *sorted(self.whisper_models.keys())
+        # Create right column container for transcription
+        self.right_container = ModernFrame(self.main_container)
+        self.right_container.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
+        
+        # Create transcription textbox with label
+        transcription_label = ModernLabel(
+            self.right_container,
+            text="Transcription Output",
+            font=FONTS['subheading']
         )
-        self.model_dropdown.pack(pady=(0,10))
-        self.model_var.set("base")  # Default to base model
+        transcription_label.pack(pady=(0, 10))
         
-        # Create min chunk length slider
-        min_chunk_frame = tk.Frame(self.left_container)
-        min_chunk_frame.pack(fill=tk.X, pady=(10,0))
+        # Create a frame for the textbox and scrollbar
+        textbox_frame = ModernFrame(self.right_container)
+        textbox_frame.pack(fill=tk.BOTH, expand=True)
         
-        min_chunk_label = tk.Label(min_chunk_frame, text="Min Chunk Length (s):", font=("Arial", 10))
-        min_chunk_label.pack(side=tk.LEFT)
+        self.top_textbox = ModernText(textbox_frame, wrap=tk.WORD)
+        self.top_textbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         
-        self.min_chunk_var = tk.DoubleVar(value=0.25)  # Default 0.25 seconds
-        self.min_chunk_slider = tk.Scale(
-            min_chunk_frame,
-            from_=0.1,
-            to=1.0,
-            resolution=0.1,
-            orient=tk.HORIZONTAL,
-            variable=self.min_chunk_var,
-            command=self._update_min_chunk
-        )
-        self.min_chunk_slider.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        # Add scrollbar to textbox
+        top_scrollbar = ttk.Scrollbar(textbox_frame, orient=tk.VERTICAL, command=self.top_textbox.yview)
+        top_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.top_textbox.config(yscrollcommand=top_scrollbar.set)
         
-        # Create max chunk length slider
-        max_chunk_frame = tk.Frame(self.left_container)
-        max_chunk_frame.pack(fill=tk.X, pady=(10,0))
+        # Get available audio devices
+        self.devices = sd.query_devices()
+        self.input_devices = [device for device in self.devices if device['max_input_channels'] > 0]
+        self.input_device_names = [f"{device['name']} (ID: {device['index']})" for device in self.input_devices]
         
-        max_chunk_label = tk.Label(max_chunk_frame, text="Max Chunk Length (s):", font=("Arial", 10))
-        max_chunk_label.pack(side=tk.LEFT)
-        
-        self.max_chunk_var = tk.DoubleVar(value=3.0)  # Default 3 seconds
-        self.max_chunk_slider = tk.Scale(
-            max_chunk_frame,
-            from_=1.0,
-            to=10.0,
-            resolution=0.5,
-            orient=tk.HORIZONTAL,
-            variable=self.max_chunk_var,
-            command=self._update_max_chunk
-        )
-        self.max_chunk_slider.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        
-        # Create silence threshold slider
-        silence_frame = tk.Frame(self.left_container)
-        silence_frame.pack(fill=tk.X, pady=(10,0))
-        
-        silence_label = tk.Label(silence_frame, text="Silence Threshold:", font=("Arial", 10))
-        silence_label.pack(side=tk.LEFT)
-        
-        self.silence_var = tk.DoubleVar(value=0.01)  # Default 0.01
-        self.silence_slider = tk.Scale(
-            silence_frame,
-            from_=0.001,
-            to=0.1,
-            resolution=0.001,
-            orient=tk.HORIZONTAL,
-            variable=self.silence_var,
-            command=self._update_silence_threshold
-        )
-        self.silence_slider.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        # Create control sections with labels
+        self._create_device_section()
+        self._create_language_section()
+        self._create_model_section()
+        self._create_audio_settings_section()
         
         # Create start/stop button
-        self.toggle_button = tk.Button(
+        self.toggle_button = ModernButton(
             self.left_container,
-            text="Start",
-            font=("Arial", 12),
+            text="Start Recording",
             command=self.toggle_audio
         )
         self.toggle_button.pack(pady=20)
         
+        # Create spectrogram section
+        spectrogram_label = ModernLabel(
+            self.left_container,
+            text="Audio Spectrogram",
+            font=FONTS['subheading']
+        )
+        spectrogram_label.pack(pady=(20, 10))
+        
         # Create a frame for the spectrogram
-        self.spectrogram_frame = tk.Frame(self.left_container, bg='black', height=200, width=400)
+        self.spectrogram_frame = ModernFrame(self.left_container, height=200, width=400)
         self.spectrogram_frame.pack(pady=10)
         self.spectrogram_frame.pack_propagate(False)
         
@@ -385,12 +400,132 @@ class VoiceRecorder:
         self.spectrogram_data = np.zeros((1024, 100), dtype=np.float32)
         
         # Status label
-        self.status_label = tk.Label(self.left_container, text="Ready", font=("Arial", 10))
+        self.status_label = ModernLabel(
+            self.left_container,
+            text="Ready",
+            font=FONTS['body']
+        )
         self.status_label.pack(pady=10)
         
         # Initialize audio stream
         self.stream = None
         self.is_running = False
+    
+    def _create_device_section(self):
+        section_label = ModernLabel(
+            self.left_container,
+            text="Audio Device",
+            font=FONTS['subheading']
+        )
+        section_label.pack(pady=(10, 5))
+        
+        self.input_device_var = tk.StringVar()
+        self.input_device_dropdown = ModernOptionMenu(
+            self.left_container,
+            self.input_device_var,
+            *self.input_device_names
+        )
+        self.input_device_dropdown.pack(pady=(0, 10))
+        self.input_device_var.set(self.input_device_names[0] if self.input_device_names else "No input devices found")
+
+    def _create_language_section(self):
+        section_label = ModernLabel(
+            self.left_container,
+            text="Language",
+            font=FONTS['subheading']
+        )
+        section_label.pack(pady=(10, 5))
+        
+        self.language_var = tk.StringVar()
+        self.language_dropdown = ModernOptionMenu(
+            self.left_container,
+            self.language_var,
+            *sorted(self.languages.keys())
+        )
+        self.language_dropdown.pack(pady=(0, 10))
+        self.language_var.set("English")
+
+    def _create_model_section(self):
+        section_label = ModernLabel(
+            self.left_container,
+            text="Whisper Model",
+            font=FONTS['subheading']
+        )
+        section_label.pack(pady=(10, 5))
+        
+        self.model_var = tk.StringVar()
+        self.model_dropdown = ModernOptionMenu(
+            self.left_container,
+            self.model_var,
+            *sorted(self.whisper_models.keys())
+        )
+        self.model_dropdown.pack(pady=(0, 10))
+        self.model_var.set("base")
+
+    def _create_audio_settings_section(self):
+        section_label = ModernLabel(
+            self.left_container,
+            text="Audio Settings",
+            font=FONTS['subheading']
+        )
+        section_label.pack(pady=(10, 5))
+        
+        # Min chunk length slider
+        min_chunk_frame = ModernFrame(self.left_container)
+        min_chunk_frame.pack(fill=tk.X, pady=(5, 0))
+        
+        min_chunk_label = ModernLabel(min_chunk_frame, text="Min Chunk Length (s):")
+        min_chunk_label.pack(side=tk.LEFT)
+        
+        self.min_chunk_var = tk.DoubleVar(value=0.25)
+        self.min_chunk_slider = ModernScale(
+            min_chunk_frame,
+            from_=0.1,
+            to=1.0,
+            resolution=0.1,
+            orient=tk.HORIZONTAL,
+            variable=self.min_chunk_var,
+            command=self._update_min_chunk
+        )
+        self.min_chunk_slider.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        
+        # Max chunk length slider
+        max_chunk_frame = ModernFrame(self.left_container)
+        max_chunk_frame.pack(fill=tk.X, pady=(5, 0))
+        
+        max_chunk_label = ModernLabel(max_chunk_frame, text="Max Chunk Length (s):")
+        max_chunk_label.pack(side=tk.LEFT)
+        
+        self.max_chunk_var = tk.DoubleVar(value=3.0)
+        self.max_chunk_slider = ModernScale(
+            max_chunk_frame,
+            from_=1.0,
+            to=10.0,
+            resolution=0.5,
+            orient=tk.HORIZONTAL,
+            variable=self.max_chunk_var,
+            command=self._update_max_chunk
+        )
+        self.max_chunk_slider.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        
+        # Silence threshold slider
+        silence_frame = ModernFrame(self.left_container)
+        silence_frame.pack(fill=tk.X, pady=(5, 0))
+        
+        silence_label = ModernLabel(silence_frame, text="Silence Threshold:")
+        silence_label.pack(side=tk.LEFT)
+        
+        self.silence_var = tk.DoubleVar(value=0.01)
+        self.silence_slider = ModernScale(
+            silence_frame,
+            from_=0.001,
+            to=0.1,
+            resolution=0.001,
+            orient=tk.HORIZONTAL,
+            variable=self.silence_var,
+            command=self._update_silence_threshold
+        )
+        self.silence_slider.pack(side=tk.LEFT, fill=tk.X, expand=True)
     
     def _update_silence_threshold(self, value):
         """Update silence threshold when slider changes."""
@@ -451,15 +586,29 @@ class VoiceRecorder:
     
     def stop_audio(self):
         if self.stream:
-            self.stream.stop()
-            self.stream.close()
-            self.stream = None
+            try:
+                self.stream.stop()
+                self.stream.close()
+                self.stream = None
+            except Exception as e:
+                print(f"Error stopping audio stream: {str(e)}")
         
         self.is_running = False
-        self.status_label.config(text="Ready")
         
-        # Stop transcription thread
-        self.stop_transcription_thread()
+        # Stop transcription thread gracefully
+        if self.transcription_thread and self.transcription_thread.is_alive():
+            # Clear the queue to prevent the thread from getting stuck
+            while not self.transcription_queue.empty():
+                try:
+                    self.transcription_queue.get_nowait()
+                except queue.Empty:
+                    break
+            
+            # Wait for the thread to finish with a timeout
+            try:
+                self.transcription_thread.join(timeout=1.0)
+            except Exception as e:
+                print(f"Error joining transcription thread: {str(e)}")
         
         # Clear buffers
         self.spectrogram_buffer = []
@@ -471,6 +620,14 @@ class VoiceRecorder:
                 self.transcription_queue.get_nowait()
             except queue.Empty:
                 break
+        
+        # Update UI
+        self.status_label.config(text="Ready")
+        self.toggle_button.config(text="Start Recording")
+        
+        # Clear spectrogram
+        self.spectrogram_data = np.zeros((1024, 100), dtype=np.float32)
+        self.spectrogram.update_spectrogram(self.spectrogram_data)
     
     def is_speech(self, audio_chunk):
         """Detect if the audio chunk contains speech based on energy."""
